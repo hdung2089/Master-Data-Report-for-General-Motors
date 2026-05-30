@@ -1,0 +1,110 @@
+name: Validate Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install pandas openpyxl pymongo
+
+      - name: Check Python syntax — ingestion scripts
+        run: |
+          python -m py_compile ingestion/hapag_scraper.py
+          echo "✅ hapag_scraper.py syntax OK"
+          python -m py_compile ingestion/maersk_scraper.py
+          echo "✅ maersk_scraper.py syntax OK"
+          python -m py_compile ingestion/mongodb_insert.py
+          echo "✅ mongodb_insert.py syntax OK"
+
+      - name: Check Python syntax — pipeline script
+        run: |
+          python -m py_compile pipeline/etl_pipeline.py
+          echo "✅ etl_pipeline.py syntax OK"
+
+      - name: Validate required columns in ETL pipeline
+        run: |
+          python - <<'EOF'
+          import ast, sys
+
+          with open("pipeline/etl_pipeline.py", "r") as f:
+              source = f.read()
+
+          required_columns = [
+              "LSC Tracking Number",
+              "Container Number",
+              "Status of Container",
+              "Port of Loading Code",
+              "Port of Destination Code",
+              "Actual Date of Arrival To Destination Port",
+          ]
+
+          missing = [col for col in required_columns if col not in source]
+
+          if missing:
+              print(f"❌ Missing required columns in pipeline: {missing}")
+              sys.exit(1)
+          else:
+              print("✅ All required columns present in etl_pipeline.py")
+          EOF
+
+      - name: Validate MongoDB insert script structure
+        run: |
+          python - <<'EOF'
+          import ast, sys
+
+          with open("ingestion/mongodb_insert.py", "r") as f:
+              source = f.read()
+
+          required_terms = ["bulk_write", "UpdateOne", "upsert=True", "HLCU", "MAEU"]
+          missing = [t for t in required_terms if t not in source]
+
+          if missing:
+              print(f"❌ mongodb_insert.py is missing: {missing}")
+              sys.exit(1)
+          else:
+              print("✅ mongodb_insert.py structure OK")
+          EOF
+
+      - name: Validate JSON scraper output structure
+        run: |
+          python - <<'EOF'
+          import json, sys, os, glob
+
+          # Check any sample JSON files committed to repo for structure
+          json_files = glob.glob("**/*.json", recursive=True)
+          sample_files = [f for f in json_files if "tracking" in f.lower()]
+
+          if not sample_files:
+              print("ℹ No sample JSON files found — skipping structure check")
+              sys.exit(0)
+
+          required_keys = ["carrier", "scraped_at", "total_events", "records"]
+
+          for filepath in sample_files:
+              with open(filepath) as f:
+                  data = json.load(f)
+              missing = [k for k in required_keys if k not in data]
+              if missing:
+                  print(f"❌ {filepath} missing keys: {missing}")
+                  sys.exit(1)
+              print(f"✅ {filepath} structure OK")
+          EOF
+
+      - name: All checks passed
+        run: echo "🎉 Pipeline validation complete — all checks passed"
